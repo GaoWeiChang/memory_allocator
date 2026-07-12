@@ -5,10 +5,19 @@
 heap_state_t heap = {
     .free_list_head = NULL,
     .heap_mutex = PTHREAD_MUTEX_INITIALIZER,
+    .strategy = STRATEGY_FIRST_FIT,
+    .next_fit_cursor = NULL,
     .total_allocated = 0,
     .allocation_count = 0,
     .free_count = 0
 };
+
+void heap_set_strategy(strategy_t strategy){
+    pthread_mutex_lock(&heap.heap_mutex);
+    heap.strategy = strategy;
+    heap.next_fit_cursor = NULL;
+    pthread_mutex_unlock(&heap.heap_mutex);
+}
 
 void heap_reset(void){
     pthread_mutex_lock(&heap.heap_mutex);
@@ -22,6 +31,18 @@ void heap_reset(void){
 }
 
 void remove_from_free_list(block_t* block){
+    /*
+        if the next-fit cursor points to this block,
+        advance it to another free block before removal
+    */
+    if(heap.next_fit_cursor == block){
+        heap.next_fit_cursor = block->next_free ? block->next_free : heap.free_list_head;
+        if(heap.next_fit_cursor == block){
+            heap.next_fit_cursor = NULL;
+        }
+    }
+
+    // remove block
     if(block->prev_free){
         block->prev_free->next_free = block->next_free;
     } else {
@@ -62,24 +83,112 @@ block_t* split_block(block_t* block, size_t needed_size){
     return new_block;
 }
 
-block_t* find_free_block(size_t size){
-    pthread_mutex_lock(&heap.heap_mutex);
-
+block_t* find_free_block_first_fit(size_t size){
     block_t* current = heap.free_list_head;
-    block_t* result = NULL;
+
     while(current){
         if(verify_block_integrity(current) != BLOCK_VALID){
-            fprintf(stderr, "Error: free list corrupt at %p\n", (void*)current);
-            pthread_mutex_unlock(&heap.heap_mutex);
+            fprintf(stderr, "Error: found free-list corruption at %p\n", (void*)current);
             return NULL;
         }
 
-        // first fit
         if(current->size >= size){
-            result = current;
-            break;
+            return current;
         }
         current = current->next_free;
+    }
+
+    return NULL;
+}
+
+block_t* find_free_block_best_fit(size_t size){
+    block_t* current = heap.free_list_head;
+    block_t* best = NULL;
+
+    while(current){
+        if(verify_block_integrity(current) != BLOCK_VALID){
+            fprintf(stderr, "Error: found free-list corruption at %p\n", (void*)current);
+            return NULL;
+        }
+
+        // NOTE !!!! why use || instead of &&?
+        if(current->size >= size){
+            if(!best || current->size < best->size){
+                best = current;
+                if(best->size == size)
+                    break;
+            }
+        }
+        current = current->next_free;
+    }
+
+    return best;
+}
+
+block_t* find_free_block_worst_fit(size_t size){
+    block_t* current = heap.free_list_head;
+    block_t* worst = NULL;
+
+    while(current){
+        if(verify_block_integrity(current) != BLOCK_VALID){
+            fprintf(stderr, "Error: found free-list corruption at %p\n", (void*)current);
+            return NULL;
+        }
+
+        if(current->size >= size){
+            if(!worst || current->size > worst->size){
+                worst = current;
+            }
+        }
+        current = current->next_free;
+    }
+
+    return worst;
+}
+
+block_t* find_free_block_next_fit(size_t size){
+    if(!heap.free_list_head)
+        return NULL;
+    
+    block_t* start = heap.next_fit_cursor ? heap.next_fit_cursor : heap.free_list_head;
+    block_t* current = start;
+
+    while(current){
+        if(verify_block_integrity(current) != BLOCK_VALID){
+            fprintf(stderr, "Error: found free-list corruption at %p\n", (void*)current);
+            return NULL;
+        }
+
+        if(current->size >= size){
+            heap.next_fit_cursor = current->next_free ? current->next_free : heap.free_list_head;
+            return current;
+        }
+
+        current = current->next_free;
+        if(current == start)
+            break;
+    }
+
+    return NULL;
+}
+
+block_t* find_free_block(size_t size){
+    pthread_mutex_lock(&heap.heap_mutex);
+
+    block_t* result;
+    switch (heap.strategy) {
+        case STRATEGY_BEST_FIT:
+            result = find_free_block_best_fit(size);
+            break;
+        case STRATEGY_WORST_FIT:
+            result = find_free_block_worst_fit(size);
+            break;
+        case STRATEGY_NEXT_FIT:
+            result = find_free_block_next_fit(size);
+            break;
+        default:
+            result = find_free_block_first_fit(size);
+            break;
     }
 
     pthread_mutex_unlock(&heap.heap_mutex);

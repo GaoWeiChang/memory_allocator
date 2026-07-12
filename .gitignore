@@ -1,2 +1,3 @@
 test/test_coalescing
 test/test_malloc
+test/test_alloc_strategies
