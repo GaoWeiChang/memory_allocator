@@ -14,9 +14,9 @@ static size_t pool_remaining = 0;
 static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // memory region
+static memory_region_t* current_sbrk_region = NULL;
 static memory_region_t* memory_regions = NULL;
 static pthread_mutex_t region_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 
 static memory_source_t select_memory_source(size_t size){
     size_t aligned_size = align_size(size);
@@ -27,20 +27,22 @@ static memory_source_t select_memory_source(size_t size){
     return MEMORY_SOURCE_SBRK;
 }
 
-static void register_memory_region(void* start, size_t size, bool is_mmap){
+static memory_region_t* register_memory_region(void* start, size_t size, bool is_mmap){
     memory_region_t* region = malloc(sizeof(memory_region_t));
     if(!region)
-        return;
+        return NULL;
     
     region->start = start;
     region->size = size;
+    region->carved_size = is_mmap ? size : 0;
     region->is_mmap = is_mmap;
 
     pthread_mutex_lock(&region_mutex);
     region->next = memory_regions;
     memory_regions = region;
-
     pthread_mutex_unlock(&region_mutex);
+
+    return region;
 }
 
 static void unregister_memory_region(void* start){
@@ -78,29 +80,8 @@ memory_region_t* find_memory_region(void* ptr){
     return NULL;
 }
 
-void memory_source_cleanup(void){
-    pthread_mutex_lock(&region_mutex);
-    memory_region_t* cur = memory_regions;
-    while(cur){
-        memory_region_t* next = cur->next;
-        if(cur->is_mmap){
-            munmap(cur->start, cur->size);
-        }
-        free(cur);
-        cur = next;
-    }
-
-    memory_regions = NULL;
-    pthread_mutex_unlock(&region_mutex);
-
-    pthread_mutex_lock(&pool_mutex);
-    heap_extension_pool = NULL;
-    pool_remaining = 0;
-    pthread_mutex_unlock(&pool_mutex);
-}
-
 /*
- * Acquire memory from the heap extension pool.
+ * Acquire memory from the heap extension pool. (via sbrk)
  *
  * Since sbrk() is a costly system call, memory is requested in large chunks
  * (HEAP_EXTENSION_SIZE). Small allocation requests are then served from this
@@ -117,6 +98,10 @@ static void* acquire_memory_sbrk(size_t size){
         void* result = heap_extension_pool;
         heap_extension_pool = (char*) heap_extension_pool + aligned_size;
         pool_remaining -= aligned_size;
+
+        if(current_sbrk_region)
+            current_sbrk_region->carved_size += aligned_size;
+
         pthread_mutex_unlock(&pool_mutex);
 
         return result;
@@ -138,12 +123,20 @@ static void* acquire_memory_sbrk(size_t size){
     heap_extension_pool = (char*)new_memory + aligned_size;
     pool_remaining = extension_size - aligned_size;
 
+    memory_region_t* region = register_memory_region(new_memory, extension_size, false);
+    if(region){
+        region->carved_size = aligned_size;
+    }
+    current_sbrk_region = region;
+
     pthread_mutex_unlock(&pool_mutex);
-    register_memory_region(new_memory, extension_size, false);
 
     return result;
 }
 
+/*
+ * Acquire memory from the heap extension pool. (via mmap)
+ */
 static void* acquire_memory_mmap(size_t size){
     size_t page_aligned_size = ((size + PAGE_SIZE - 1)/PAGE_SIZE) * PAGE_SIZE;
     void* ptr = mmap(NULL, page_aligned_size,
@@ -209,4 +202,39 @@ void release_memory(void* ptr, size_t size){
     if(region->is_mmap){
         release_memory_mmap(ptr);
     }
+}
+
+void memory_source_for_each_region(region_visitor_t visitor, void* ctx){
+    if(!visitor)
+        return;
+    
+    pthread_mutex_lock(&region_mutex);
+    memory_region_t* cur = memory_regions;
+    while(cur){
+        visitor(cur, ctx);
+        cur = cur->next;
+    }
+    pthread_mutex_unlock(&region_mutex);
+}
+
+/* test helpers */
+void memory_source_cleanup(void){
+    pthread_mutex_lock(&region_mutex);
+    memory_region_t* cur = memory_regions;
+    while(cur){
+        memory_region_t* next = cur->next;
+        if(cur->is_mmap){
+            munmap(cur->start, cur->size);
+        }
+        free(cur);
+        cur = next;
+    }
+
+    memory_regions = NULL;
+    pthread_mutex_unlock(&region_mutex);
+
+    pthread_mutex_lock(&pool_mutex);
+    heap_extension_pool = NULL;
+    pool_remaining = 0;
+    pthread_mutex_unlock(&pool_mutex);
 }

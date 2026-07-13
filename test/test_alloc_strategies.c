@@ -37,20 +37,20 @@ static void test_first_fit_picks_first_sufficient(void) {
      * into a single larger block, leaving no separate free blocks for
      * the allocation strategy to choose from.
      */
-    void* g0 = cmalloc(16);
-    void* p1 = cmalloc(256);   /* Freed first  -> ends up at the tail of the free list */
-    void* g1 = cmalloc(16);
-    void* p2 = cmalloc(64);
-    void* g2 = cmalloc(16);
-    void* p3 = cmalloc(512);
-    void* g3 = cmalloc(16);
-    void* p4 = cmalloc(64);    /* Freed last -> becomes the head of the free list */
-    void* g4 = cmalloc(16);
+    void* g0 = mem_alloc(16);
+    void* p1 = mem_alloc(256);   /* Freed first  -> ends up at the tail of the free list */
+    void* g1 = mem_alloc(16);
+    void* p2 = mem_alloc(64);
+    void* g2 = mem_alloc(16);
+    void* p3 = mem_alloc(512);
+    void* g3 = mem_alloc(16);
+    void* p4 = mem_alloc(64);    /* Freed last -> becomes the head of the free list */
+    void* g4 = mem_alloc(16);
 
-    cfree(p1);
-    cfree(p2);
-    cfree(p3);
-    cfree(p4);
+    mem_free(p1);
+    mem_free(p2);
+    mem_free(p3);
+    mem_free(p4);
 
     print_free_list("current free list (head -> tail)");
 
@@ -60,16 +60,16 @@ static void test_first_fit_picks_first_sufficient(void) {
      * The key behavior is that First-Fit stops searching as soon as it finds
      * the first block that is large enough.
      */
-    void* result = cmalloc(32);
+    void* result = mem_alloc(32);
     block_t* result_block = get_block_from_ptr(result);
     assert(result_block == get_block_from_ptr(p4));
 
-    cfree(result);
-    cfree(g0);
-    cfree(g1);
-    cfree(g2);
-    cfree(g3);
-    cfree(g4);
+    mem_free(result);
+    mem_free(g0);
+    mem_free(g1);
+    mem_free(g2);
+    mem_free(g3);
+    mem_free(g4);
 
     printf("--------\n");
     printf("  PASS  \n");
@@ -86,33 +86,33 @@ static void test_best_fit_picks_tightest(void){
     printf("=> Test 2: Best-fit strategy\n");
     printf("\n");
 
-    void* g0 = cmalloc(16);
-    void* p1 = cmalloc(256);
-    void* g1 = cmalloc(16);
-    void* p2 = cmalloc(512);
-    void* g2 = cmalloc(16);
-    void* p3 = cmalloc(80);    /* best-fit */
-    void* g3 = cmalloc(16);
-    void* p4 = cmalloc(1024);
-    void* g4 = cmalloc(16);
+    void* g0 = mem_alloc(16);
+    void* p1 = mem_alloc(256);
+    void* g1 = mem_alloc(16);
+    void* p2 = mem_alloc(512);
+    void* g2 = mem_alloc(16);
+    void* p3 = mem_alloc(80);    /* best-fit */
+    void* g3 = mem_alloc(16);
+    void* p4 = mem_alloc(1024);
+    void* g4 = mem_alloc(16);
 
-    cfree(p1);
-    cfree(p2);
-    cfree(p3);
-    cfree(p4);
+    mem_free(p1);
+    mem_free(p2);
+    mem_free(p3);
+    mem_free(p4);
 
     print_free_list("current free list (head -> tail)");
 
-    void* result = cmalloc(64);
+    void* result = mem_alloc(64);
     block_t* result_block = get_block_from_ptr(result);
     assert(result_block == get_block_from_ptr(p3));
 
-    cfree(result);
-    cfree(g0); 
-    cfree(g1); 
-    cfree(g2); 
-    cfree(g3); 
-    cfree(g4);
+    mem_free(result);
+    mem_free(g0); 
+    mem_free(g1); 
+    mem_free(g2); 
+    mem_free(g3); 
+    mem_free(g4);
 
     printf("--------\n");
     printf("  PASS  \n");
@@ -129,33 +129,33 @@ static void test_worst_fit_picks_largest(void){
     printf("=> Test 3: Worst-fit strategy\n");
     printf("\n");
 
-    void* g0 = cmalloc(16);
-    void* p1 = cmalloc(256);
-    void* g1 = cmalloc(16);
-    void* p2 = cmalloc(1024);   /* largest -> Worst-Fit */
-    void* g2 = cmalloc(16);
-    void* p3 = cmalloc(80);
-    void* g3 = cmalloc(16);
-    void* p4 = cmalloc(512);
-    void* g4 = cmalloc(16);
+    void* g0 = mem_alloc(16);
+    void* p1 = mem_alloc(256);
+    void* g1 = mem_alloc(16);
+    void* p2 = mem_alloc(1024);   /* largest -> Worst-Fit */
+    void* g2 = mem_alloc(16);
+    void* p3 = mem_alloc(80);
+    void* g3 = mem_alloc(16);
+    void* p4 = mem_alloc(512);
+    void* g4 = mem_alloc(16);
 
-    cfree(p1);
-    cfree(p2);
-    cfree(p3);
-    cfree(p4);
+    mem_free(p1);
+    mem_free(p2);
+    mem_free(p3);
+    mem_free(p4);
 
     print_free_list("current free list (head -> tail)");
 
-    void* result = cmalloc(64);
+    void* result = mem_alloc(64);
     block_t* result_block = get_block_from_ptr(result);
     assert(result_block == get_block_from_ptr(p2));
 
-    cfree(result);
-    cfree(g0); 
-    cfree(g1); 
-    cfree(g2); 
-    cfree(g3); 
-    cfree(g4);
+    mem_free(result);
+    mem_free(g0); 
+    mem_free(g1); 
+    mem_free(g2); 
+    mem_free(g3); 
+    mem_free(g4);
 
     printf("--------\n");
     printf("  PASS  \n");
@@ -175,18 +175,18 @@ static void test_next_fit_distributes_across_heap(void){
     void* ptrs[5];
     void* guards[5];
     for (int i = 0; i < 5; i++) {
-        ptrs[i] = cmalloc(64);
-        guards[i] = cmalloc(16);
+        ptrs[i] = mem_alloc(64);
+        guards[i] = mem_alloc(16);
     }
     for (int i = 0; i < 5; i++){
-        cfree(ptrs[i]);
+        mem_free(ptrs[i]);
     }
 
     /* First allocation:
     * Should return the block at the initial cursor position
     * (the head of the free list).
     */
-    void* r1 = cmalloc(64);
+    void* r1 = mem_alloc(64);
     block_t* cursor_after_r1 = heap.next_fit_cursor;
     printf("  malloc(64) #1 -> returned %p, cursor advanced to %p\n", get_block_from_ptr(r1), (void*)cursor_after_r1);
 
@@ -194,14 +194,14 @@ static void test_next_fit_distributes_across_heap(void){
     * The cursor should continue from its current position
     * instead of restarting at the head of the free list.
     */
-    void* r2 = cmalloc(64);
+    void* r2 = mem_alloc(64);
     printf("  malloc(64) #2 -> returned %p (a different block from the first; did not wrap back to the beginning)\n", get_block_from_ptr(r2));
     assert(get_block_from_ptr(r2) != get_block_from_ptr(r1));
 
-    cfree(r1);
-    cfree(r2);
+    mem_free(r1);
+    mem_free(r2);
     for (int i = 0; i < 5; i++){
-        cfree(guards[i]);
+        mem_free(guards[i]);
     }
 
     printf("--------\n");
@@ -222,10 +222,10 @@ static void test_search_speed_comparison(void) {
         /* Build a free list containing 2,000 blocks of varying sizes. */
         void* ptrs[2000];
         for (int i = 0; i < 2000; i++) {
-            ptrs[i] = cmalloc((size_t)(16 + (i % 100) * 8));
+            ptrs[i] = mem_alloc((size_t)(16 + (i % 100) * 8));
         }
         for (int i = 0; i < 2000; i++) {
-            cfree(ptrs[i]);
+            mem_free(ptrs[i]);
         }
 
         struct timespec t0, t1;
@@ -236,8 +236,8 @@ static void test_search_speed_comparison(void) {
         * to traverse the free list to find a suitable block.
         */
         for (int i = 0; i < 1000; i++) {
-            void* p = cmalloc(50);
-            if (p) cfree(p);
+            void* p = mem_alloc(50);
+            if (p) mem_free(p);
         }
 
         clock_gettime(CLOCK_MONOTONIC, &t1);
