@@ -12,9 +12,9 @@ static void test_forward_coalescing(void){
     printf("=> Test 1: Forward coalescing\n");
     printf("\n");
 
-    void* a = cmalloc(64);
-    void* b = cmalloc(64);
-    void* c = cmalloc(64);
+    void* a = mem_alloc(64);
+    void* b = mem_alloc(64);
+    void* c = mem_alloc(64);
     assert(a && b && c);
 
     block_t* block_a = get_block_from_ptr(a);
@@ -22,8 +22,8 @@ static void test_forward_coalescing(void){
     size_t size_a_before = block_a->size;
     size_t size_b_before = block_b->size;
 
-    cfree(b);
-    cfree(a);
+    mem_free(b);
+    mem_free(a);
 
     // check block a coalesce with b
     block_t* merged = get_block_from_ptr(a);
@@ -32,7 +32,7 @@ static void test_forward_coalescing(void){
     assert(merged->size >= expected_min);
     assert(merged->is_free == 1);
 
-    cfree(c);
+    mem_free(c);
     printf("--------\n");
     printf("  PASS  \n");
     printf("--------\n");
@@ -47,9 +47,9 @@ static void test_backward_coalescing(void){
     printf("=> Test 2: Backward coalescing\n");
     printf("\n");
 
-    void* a = cmalloc(64);
-    void* b = cmalloc(64);
-    void* c = cmalloc(64);
+    void* a = mem_alloc(64);
+    void* b = mem_alloc(64);
+    void* c = mem_alloc(64);
     assert(a && b && c);
 
     block_t* block_a = get_block_from_ptr(a);
@@ -57,15 +57,15 @@ static void test_backward_coalescing(void){
     size_t size_a = block_a->size;
     size_t size_b = block_b->size;
 
-    cfree(a);
-    cfree(b);
+    mem_free(a);
+    mem_free(b);
     
     
     block_t* merged = get_block_from_ptr(a);   /* ผลลัพธ์ควรมี a เป็นจุดเริ่มต้น เพราะ prev ชนะ */
     size_t expected_min = size_a + FOOTER_SIZE + HEADER_SIZE + size_b;
     assert(merged->size >= expected_min);
 
-    cfree(c);
+    mem_free(c);
     
     printf("--------\n");
     printf("  PASS  \n");
@@ -81,9 +81,9 @@ static void test_triple_coalescing_and_reuse(void){
     printf("=> Test 3: Coalesce 3 blocks and reuse\n");
     printf("\n");
 
-    void* a = cmalloc(128);
-    void* b = cmalloc(128);
-    void* c = cmalloc(128);
+    void* a = mem_alloc(128);
+    void* b = mem_alloc(128);
+    void* c = mem_alloc(128);
     assert(a && b && c);
 
     block_t* block_a = get_block_from_ptr(a);
@@ -97,12 +97,12 @@ static void test_triple_coalescing_and_reuse(void){
     size_t size_b = block_b->size;
     size_t total_payload = size_a + size_b + block_c->size;
 
-    cfree(a);
-    cfree(c);   /* a and c are free, but b (the middle block) is still allocated,
+    mem_free(a);
+    mem_free(c);   /* a and c are free, but b (the middle block) is still allocated,
                        * so a and c remain as two separate free blocks.
                        */
 
-    cfree(b);   /* Once b is also freed, a, b, and c should merge
+    mem_free(b);   /* Once b is also freed, a, b, and c should merge
                        * into one large contiguous block.
                        */
 
@@ -117,14 +117,14 @@ static void test_triple_coalescing_and_reuse(void){
      */
     size_t big_request = size_a + size_b + 32;  /* Larger than either a or b individually. */
 
-    void* big = cmalloc(big_request);
+    void* big = mem_alloc(big_request);
     assert(big != NULL);
     assert(big == a);   /* First-fit should return the newly merged block. */
 
     printf("  malloc(%zu) succeeded using the original address, proving that the blocks were successfully coalesced.\n",
            big_request);
 
-    cfree(big);
+    mem_free(big);
 
     printf("--------\n");
     printf("  PASS  \n");
@@ -144,9 +144,9 @@ static void test_no_out_of_bounds_read_at_heap_edge(void){
     /* จองก้อนเดียวแล้ว free ทันที มันจะกลายเป็นก้อนแรก (หรือก้อนเดียว) ใน region
      * ตอน free ต้องพยายาม coalesce ทั้งซ้ายและขวา ซึ่งอาจชนขอบ region ได้
      * ถ้า boundary check ผิดพลาด โปรแกรมจะ segfault ทันทีตรงนี้ */
-    void* p = cmalloc(32);
+    void* p = mem_alloc(32);
     assert(p != NULL);
-    cfree(p);   /* ถ้าไม่ crash แปลว่า is_valid_neighbor() ป้องกันการอ่านเลยขอบเขตได้จริง */
+    mem_free(p);   /* ถ้าไม่ crash แปลว่า is_valid_neighbor() ป้องกันการอ่านเลยขอบเขตได้จริง */
 
     printf("  free() ที่ขอบ region ไม่ crash -> boundary check ทำงานถูกต้อง\n");
 

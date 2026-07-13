@@ -24,7 +24,8 @@ typedef enum {
 
 typedef struct memory_region {
     void* start;
-    size_t size;
+    size_t size;               // total capacity received from OS (via sbrk/mmap)
+    size_t carved_size;        // portion of size in region
     bool is_mmap;
     struct memory_region* next;
 } memory_region_t;
@@ -36,6 +37,17 @@ void* acquire_memory(size_t total_size);
 void release_memory(void* ptr, size_t size);
 
 memory_region_t* find_memory_region(void* ptr);
+
+/*
+Iterates through all regions managed by the allocator (used for heap_check_consistency())
+    WARNING: The visitor executes while region_mutex is held. To avoid a deadlock, 
+            the visitor MUST NOT call any functions in memory_source.c (e.g., acquire_memory/find_memory_region).
+            visitor should only read region data and record it via the ctx pointer. 
+*/
+typedef void (*region_visitor_t)(const memory_region_t* region, void* ctx);
+void memory_source_for_each_region(region_visitor_t visitor, void* ctx);
+
+// memory cleanup for test
 void memory_source_cleanup(void);
 
 #endif

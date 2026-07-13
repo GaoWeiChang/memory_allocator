@@ -19,17 +19,6 @@ void heap_set_strategy(strategy_t strategy){
     pthread_mutex_unlock(&heap.heap_mutex);
 }
 
-void heap_reset(void){
-    pthread_mutex_lock(&heap.heap_mutex);
-    heap.free_list_head = NULL;
-    heap.total_allocated = 0;
-    heap.allocation_count = 0;
-    heap.free_count = 0;
-    pthread_mutex_unlock(&heap.heap_mutex);
-
-    memory_source_cleanup();
-}
-
 void remove_from_free_list(block_t* block){
     /*
         if the next-fit cursor points to this block,
@@ -195,11 +184,31 @@ block_t* find_free_block(size_t size){
     return result;
 }
 
+// use-after-free poisoning
+static void poison_block_payload(block_t* block){
+    memset(get_ptr_from_block(block), POISON_BYTE, block->size);
+}
+
+static bool is_poison_intact(block_t* block, size_t len){
+    unsigned char* ptr = (unsigned char*)get_ptr_from_block(block);
+    for(size_t i=0; i<len; i++){
+        if(ptr[i] != POISON_BYTE)
+            return false;
+    }
+
+    return true;
+}
+
 static void* allocate_from_free_block(block_t* block, size_t size){
     // remove block from free list
     pthread_mutex_lock(&heap.heap_mutex);
     remove_from_free_list(block);
     pthread_mutex_unlock(&heap.heap_mutex);
+
+    if(!is_poison_intact(block, block->size)){
+        fprintf(stderr, "Heap warning: Found write memory overlapped after free() (use-after-free) at %p\n", 
+                get_ptr_from_block(block));    
+    }
 
     block_t* remainder = split_block(block, size);
     if(remainder){
@@ -298,7 +307,7 @@ static block_t* coalesce_backward(block_t* block, memory_region_t* region){
     return prev;
 }
 
-void* cmalloc(size_t size){
+void* mem_alloc(size_t size){
     if(size == 0)
         return NULL;
     
@@ -316,7 +325,7 @@ void* cmalloc(size_t size){
     return allocate_new_memory(aligned_size);
 }
 
-void cfree(void* ptr){
+void mem_free(void* ptr){
     if(!ptr)
         return;
     
@@ -359,7 +368,131 @@ void cfree(void* ptr){
         block = coalesce_backward(block, region);
     }
 
+    poison_block_payload(block);
     add_to_free_list(block);
 
     pthread_mutex_unlock(&heap.heap_mutex);
+}
+
+/* Check heap consistency */
+/*
+    traverses every physical block in each sbrk region
+    (using get_next_block() from the start to the end of the region),
+    including both allocated and free blocks. It then verifies that
+    the free list matches the actual heap layout, unlike find_free_block(), 
+    which scans only the free list making it a more reliable debugging tool
+    than scanning the free list alone.
+*/
+static bool block_in_free_list(block_t* target) {
+    block_t* cur = heap.free_list_head;
+    while(cur){
+        if(cur == target)
+            return true;
+        cur = cur->next_free;
+    }
+
+    return false;
+}
+
+static void check_region_visitor(const memory_region_t* region, void* ctx_ptr) {
+    heap_check_result_t* result = (heap_check_result_t*)ctx_ptr;
+
+    if(region->is_mmap){
+        // 1 block per region for mmap()
+        block_t* block = (block_t*)region->start;
+        result->block_checked++;
+
+        if(verify_block_integrity(block) != BLOCK_VALID){
+            result->corrupted_blocks++;
+            return;
+        }
+
+        if(block->is_free){
+            result->free_list_mismatches++;
+        } else {
+            result->allocated_blocks_found++;
+        }
+        return;
+    }
+    
+    char* region_end = (char*)region->start + region->carved_size;
+    block_t* block = (block_t*)region->start;
+
+    while((char*)block < region_end){
+        result->block_checked++;
+
+        if(verify_block_integrity(block) != BLOCK_VALID){
+            result->corrupted_blocks++;
+            break;
+        }
+
+        bool in_free_list = block_in_free_list(block);
+        if(block->is_free) {
+            result->free_blocks_found++;
+            if(!in_free_list)
+                result->free_list_mismatches++;
+        } else {
+            result->allocated_blocks_found++;
+            if(in_free_list)
+                result->free_list_mismatches++;
+        }
+
+        block = get_next_block(block);
+    }
+}
+
+heap_check_result_t heap_check_consistency(void){
+    heap_check_result_t result = {0,0,0,0,0,true};
+
+    pthread_mutex_lock(&heap.heap_mutex);
+    memory_source_for_each_region(check_region_visitor, &result);
+    pthread_mutex_unlock(&heap.heap_mutex);
+
+    result.heap_is_consistent = (result.corrupted_blocks == 0 && result.free_list_mismatches == 0);
+    return result;
+}
+
+// dump allocator state for debugging
+static void dump_region_visitor(const memory_region_t* region, void* ctx){
+    (void)ctx;
+    printf("region %p (%zu bytes, %s)\n",
+           region->start, region->size, region->is_mmap ? "mmap" : "sbrk");
+
+    if (region->is_mmap) {
+        block_t* block = (block_t*)region->start;
+        printf("[%p] size=%-8zu %s\n",
+               (void*)block, block->size, block->is_free ? "FREE" : "used");
+        return;
+    }
+
+    char* region_end = (char*)region->start + region->carved_size;
+    block_t* block = (block_t*)region->start;
+
+    while ((char*)block < region_end) {
+        if (verify_block_integrity(block) != BLOCK_VALID) {
+            printf("[%p] CORRUPTED\n", (void*)block);
+            break;
+        }
+        printf("[%p] size=%-8zu %s\n", (void*)block, block->size, block->is_free ? "FREE" : "used");
+        block = get_next_block(block);
+    }
+}
+
+void heap_reset(void){
+    pthread_mutex_lock(&heap.heap_mutex);
+    heap.free_list_head = NULL;
+    heap.total_allocated = 0;
+    heap.allocation_count = 0;
+    heap.free_count = 0;
+    pthread_mutex_unlock(&heap.heap_mutex);
+
+    memory_source_cleanup();
+}
+
+void heap_dump(void) {
+    printf("===== Heap Dump =====\n");
+    pthread_mutex_lock(&heap.heap_mutex);
+    memory_source_for_each_region(dump_region_visitor, NULL);
+    pthread_mutex_unlock(&heap.heap_mutex);
+    printf("======================\n");
 }

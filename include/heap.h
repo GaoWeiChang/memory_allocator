@@ -5,6 +5,8 @@
 #include "memory_source.h"
 #include <pthread.h>
 
+#define POISON_BYTE 0xDD
+
 typedef enum {
     STRATEGY_FIRST_FIT,
     STRATEGY_BEST_FIT,
@@ -17,12 +19,21 @@ typedef struct {
     pthread_mutex_t heap_mutex;
 
     strategy_t strategy;
-    block_t* next_fit_cursor;
+    block_t* next_fit_cursor;       // next-fit strategy
 
     size_t total_allocated;
     size_t allocation_count;
     size_t free_count;
 } heap_state_t;
+
+typedef struct {
+    size_t block_checked;
+    size_t free_blocks_found;
+    size_t allocated_blocks_found;
+    size_t corrupted_blocks;
+    size_t free_list_mismatches;
+    bool heap_is_consistent;
+} heap_check_result_t;
 
 extern heap_state_t heap;
 
@@ -41,11 +52,15 @@ block_t* find_free_block_best_fit(size_t size);
 block_t* find_free_block_worst_fit(size_t size);
 block_t* find_free_block_next_fit(size_t size);
 
-/* public api */
-void* cmalloc(size_t size);
-void cfree(void* ptr);
+/* check consistency */
+heap_check_result_t heap_check_consistency(void);
 
-/* reset heap for testing */
+/* public api */
+void* mem_alloc(size_t size);
+void mem_free(void* ptr);
+
+/* for testing & debugging */
 void heap_reset(void);
+void heap_dump(void);
 
 #endif

@@ -7,12 +7,15 @@
 
 /*
     Block layout
-        [ HEADER (32B) ][ payload (size bytes) ][ FOOTER (8B) = size ]
-         store metadata   actual user data size   copy of the block size, used to find the previous block during coalescing
+        [ HEADER (32B) ] metadata
+        [ payload (size bytes) ] actual user data    
+        [ FOOTER (8B) ] copy of the block size, used to find the previous block during coalescing
+        [ CANARY (8B) ] check buffer overflow / memory corrupt
 */
 
 /* block config*/
 #define MAGIC_NUMBER 0xDEADBEEF
+#define CANARY_PATTERN ((size_t)0xC0FFEEC0FFEEC0FFULL)
 #define ALIGNMENT 16
 #define MIN_ALLOC_SIZE (sizeof(void*) * 2)  // minimum space for prev_free/next_free
 
@@ -35,7 +38,9 @@ typedef enum{
     BLOCK_CORRUPT_MAGIC,
     BLOCK_INVALID_SIZE,
     BLOCK_MISALIGNED,
-    BLOCK_INVALID_FREE_STATE
+    BLOCK_INVALID_FREE_STATE,
+    BLOCK_FOOTER_MISMATCH,
+    BLOCK_CANARY_CORRUPTED
 } block_status_t;
 
 /* memory alignment */
@@ -59,16 +64,23 @@ static inline block_t* get_block_from_ptr(void* ptr){
 }
 
 
-/* block footer */
+/* footer */
 static inline size_t* get_footer_ptr(block_t* block){
     return (size_t*)((char*)block + HEADER_SIZE + block->size);
 }
 
-static inline void write_footer(block_t* block){
-    size_t* footer = get_footer_ptr(block);
-    *footer = block->size;
+/* canary */
+static inline size_t* get_canary_ptr(block_t* block){
+    return (size_t*)((char*)block + HEADER_SIZE + block->size + sizeof(size_t));
 }
 
+static inline void write_footer(block_t* block){
+    size_t* footer = get_footer_ptr(block);
+    size_t* canary = get_canary_ptr(block);
+
+    *footer = block->size;
+    *canary = CANARY_PATTERN;
+}
 
 /* Initialize block */
 static inline void initialize_allocated_block(block_t* block, size_t size){
@@ -141,6 +153,14 @@ static inline block_status_t verify_block_integrity(block_t* block){
 
     if((block->is_free != 0) && (block->is_free != 1)){
         return BLOCK_INVALID_FREE_STATE;
+    }
+
+    if(*get_footer_ptr(block) != block->size){
+        return BLOCK_FOOTER_MISMATCH;
+    }
+
+    if(*get_canary_ptr(block) != CANARY_PATTERN){
+        return BLOCK_CANARY_CORRUPTED;
     }
 
     return BLOCK_VALID;
