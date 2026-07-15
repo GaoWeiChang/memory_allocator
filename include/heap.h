@@ -58,6 +58,10 @@ heap_check_result_t heap_check_consistency(void);
 /* public api */
 void* mem_alloc(size_t size);
 void mem_free(void* ptr);
+void* mem_calloc(size_t nmemb, size_t size);
+void* mem_realloc(void* ptr, size_t new_size);
+void* mem_aligned_alloc(size_t alignment, size_t size);
+size_t mem_alloc_usable_size(void* ptr);
 
 /* for testing & debugging */
 void heap_reset(void);

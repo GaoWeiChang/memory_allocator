@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 
+// marker that tell this pointer came from aligned_alloc() not malloc()
+#define ALIGN_MARKER ((size_t)0xA11CEDA11C0FFEEULL)
+
 heap_state_t heap = {
     .free_list_head = NULL,
     .heap_mutex = PTHREAD_MUTEX_INITIALIZER,
@@ -307,6 +310,20 @@ static block_t* coalesce_backward(block_t* block, memory_region_t* region){
     return prev;
 }
 
+// resolve aligned allocation pointer to it's original raw allocation
+static void* resolve_aligned_redirect(void* ptr){
+    size_t* marker_slot = (size_t*)((char*)ptr - sizeof(size_t));
+    if(*marker_slot != ALIGN_MARKER)
+        return NULL;
+
+    void* raw = *(void**)((char*)ptr - 2 * sizeof(size_t));
+    block_t* raw_block = get_block_from_ptr(raw);
+    if(verify_block_integrity(raw_block) != BLOCK_VALID)
+        return NULL;
+    
+    return raw;
+}
+
 void* mem_alloc(size_t size){
     if(size == 0)
         return NULL;
@@ -329,6 +346,12 @@ void mem_free(void* ptr){
     if(!ptr)
         return;
     
+    void* redirect = resolve_aligned_redirect(ptr);
+    if(redirect){
+        mem_free(redirect);
+        return;
+    }
+
     // locate and verift block
     block_t* block = get_block_from_ptr(ptr);
     block_status_t status = verify_block_integrity(block);
@@ -372,6 +395,184 @@ void mem_free(void* ptr){
     add_to_free_list(block);
 
     pthread_mutex_unlock(&heap.heap_mutex);
+}
+
+void* mem_calloc(size_t nmemb, size_t size){
+    if((nmemb != 0) && (nmemb * size > SIZE_MAX)){
+        fprintf(stderr, "Heap calloc() error: integer overflow found (nmemb=%zu * size=%zu exceed SIZE_MAX)\n", nmemb, size);
+        return NULL;
+    }
+
+    size_t total = nmemb * size;
+    void* ptr = mem_alloc(total);
+    if(ptr)
+        memset(ptr, 0, total);
+
+    return ptr;
+}
+
+void* mem_realloc(void* ptr, size_t new_size){
+    /* Idea: 
+        Allocate in the same memory address if the new size is sufficient,
+        and move to a new memory address if the original size is insufficient
+    */
+    if(!ptr)
+        return mem_alloc(new_size);
+    
+    if(new_size == 0){
+        mem_free(ptr);
+        return NULL;
+    }
+
+    /* 
+        The pointer returned by mem_aligned_alloc() may not point directly to the
+        beginning of the underlying block because of extra padding used to satisfy
+        the requested alignment. Therefore, aligned allocations always fall back to
+        the allocate-copy-free approach during realloc.
+    */
+    void* redirect = resolve_aligned_redirect(ptr);
+    if(redirect){
+        size_t old_usable = mem_alloc_usable_size(ptr);
+        void* new_ptr = mem_alloc(new_size);
+        if(!new_ptr)
+            return NULL;
+        
+        size_t copy_size = (old_usable < new_size) ? old_usable : new_size;
+        memcpy(new_ptr, ptr, copy_size);
+        mem_free(ptr);
+
+        return new_ptr;
+    }
+
+    block_t* block = get_block_from_ptr(ptr);
+    if(verify_block_integrity(block) != BLOCK_VALID){
+        fprintf(stderr, "Heap realloc() error: incorrect pointer at %p\n", ptr);
+        return NULL;
+    }
+
+    size_t actual_size = (new_size < MIN_ALLOC_SIZE) ? MIN_ALLOC_SIZE : new_size;
+    size_t aligned_new = align_size(actual_size);
+    size_t old_size = block->size;
+    
+    // new size <= old size, shrink the block in place
+    if(aligned_new <= old_size){
+        pthread_mutex_lock(&heap.heap_mutex);
+
+        block_t* remainder = split_block(block, aligned_new);
+        if(remainder){
+            memory_region_t* region = find_memory_region(block);
+            if(region && !region->is_mmap){
+                coalesce_forward(remainder, region);
+            }
+            poison_block_payload(remainder);
+            add_to_free_list(remainder);
+            heap.total_allocated -= (old_size - block->size);
+        }
+
+        pthread_mutex_unlock(&heap.heap_mutex);
+        return ptr;
+    }
+
+    // new size > old size, try to grow the block in-place by merging with adjacent free blocks
+    memory_region_t* region = find_memory_region(block);
+    if(region && !region->is_mmap){
+        pthread_mutex_lock(&heap.heap_mutex);
+
+        bool merged = coalesce_forward(block, region);
+        if(merged && block->size >= aligned_new){
+            block_t* remainder = split_block(block, aligned_new);
+            if (remainder) {
+                coalesce_forward(remainder, region);
+                poison_block_payload(remainder);
+                add_to_free_list(remainder);
+            }
+
+            // write footer/canary at new position
+            initialize_allocated_block(block, block->size);
+            heap.total_allocated += (block->size - old_size);
+            heap.allocation_count++;
+            
+            pthread_mutex_unlock(&heap.heap_mutex);
+            return get_ptr_from_block(block);
+        }
+
+        pthread_mutex_unlock(&heap.heap_mutex);
+    }
+
+    // fallback to allocate-copy-free if in-place growth is impossible
+    void* new_ptr = mem_alloc(new_size);
+    if(!new_ptr)
+        return NULL;
+    
+    size_t copy_size = (old_size < new_size) ? old_size : new_size;
+    memcpy(new_ptr, ptr, copy_size);
+    mem_free(ptr);
+    return new_ptr;
+}
+
+/*
+    Standard malloc() guarantees up to 16-byte alignment (max_align_t),
+    which is sufficient for all standard C data types.
+
+    Use my_aligned_alloc() only when alignments > 16 bytes 
+        eg. SIMD / AVX-2
+ */
+void* mem_aligned_alloc(size_t alignment, size_t size){
+    if(alignment == 0 || (alignment & (alignment - 1)) != 0) {
+        fprintf(stderr, "Heap aligned_alloc(): alignment=%zu must be power of 2\n", alignment);
+        return NULL;
+    }
+    if(size % alignment != 0){
+        fprintf(stderr, "[heap] aligned_alloc(): size=%zu must divisible by alignment=%zu\n",
+                size, alignment);
+        return NULL;
+    }
+    if(size == 0)
+        return NULL;
+    
+    if(alignment <= ALIGNMENT)
+        return mem_alloc(size);
+
+    size_t extra = alignment + 2*sizeof(size_t);    // alignment + (raw pointer + ALIGN_MARKER)
+    void* raw = mem_alloc(size + extra);
+    if(!raw)
+        return NULL;
+
+    /*
+    Allocate extra space to accommodate:
+        1. 16 bytes (2 * sizeof(size_t)) for metadata (original pointer + marker)
+        2. Up to (alignment - 1) bytes for shifting the pointer to the alignment boundary
+     */
+    uintptr_t raw_addr = (uintptr_t)raw;
+    uintptr_t min_addr = raw_addr + (2 * sizeof(size_t));  // ensure there are at least 16 bytes before the aligned pointer to store the stash
+    uintptr_t aligned_addr = (min_addr + alignment - 1) & ~((uintptr_t)alignment - 1);
+
+    void* aligned_ptr = (void*)aligned_addr;
+
+    void** stash = (void**)((char*)aligned_ptr - 2 * sizeof(size_t));
+    stash[0] = raw;
+    ((size_t*)stash)[1] = ALIGN_MARKER;
+
+    return aligned_ptr;
+}
+
+// return usable size of the block (the return will more than or equal )
+size_t mem_alloc_usable_size(void* ptr){
+    if(!ptr)    
+        return 0;
+    
+    void* redirect = resolve_aligned_redirect(ptr);
+    if(redirect){
+        block_t* raw_block = get_block_from_ptr(redirect);
+        size_t offset = (size_t)((char*)ptr - (char*)redirect);
+        return raw_block->size - offset;
+    }
+
+    block_t* block = get_block_from_ptr(ptr);
+    if(verify_block_integrity(block) != BLOCK_VALID)
+        return 0;
+    
+    return block->size;
 }
 
 /* Check heap consistency */
