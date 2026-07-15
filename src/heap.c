@@ -165,8 +165,6 @@ block_t* find_free_block_next_fit(size_t size){
 }
 
 block_t* find_free_block(size_t size){
-    pthread_mutex_lock(&heap.heap_mutex);
-
     block_t* result;
     switch (heap.strategy) {
         case STRATEGY_BEST_FIT:
@@ -183,7 +181,6 @@ block_t* find_free_block(size_t size){
             break;
     }
 
-    pthread_mutex_unlock(&heap.heap_mutex);
     return result;
 }
 
@@ -204,9 +201,7 @@ static bool is_poison_intact(block_t* block, size_t len){
 
 static void* allocate_from_free_block(block_t* block, size_t size){
     // remove block from free list
-    pthread_mutex_lock(&heap.heap_mutex);
     remove_from_free_list(block);
-    pthread_mutex_unlock(&heap.heap_mutex);
 
     if(!is_poison_intact(block, block->size)){
         fprintf(stderr, "Heap warning: Found write memory overlapped after free() (use-after-free) at %p\n", 
@@ -215,17 +210,13 @@ static void* allocate_from_free_block(block_t* block, size_t size){
 
     block_t* remainder = split_block(block, size);
     if(remainder){
-        pthread_mutex_lock(&heap.heap_mutex);
         add_to_free_list(remainder);
-        pthread_mutex_unlock(&heap.heap_mutex);
     }
 
     initialize_allocated_block(block, block->size);
 
-    pthread_mutex_lock(&heap.heap_mutex);
     heap.total_allocated += block->size;
     heap.allocation_count++;
-    pthread_mutex_unlock(&heap.heap_mutex);
 
     return get_ptr_from_block(block);
 }
@@ -241,9 +232,9 @@ static void* allocate_new_memory(size_t size){
         return NULL;
     
     block_t* block = (block_t*)memory;
-    initialize_allocated_block(block, payload_size);
-
+    
     pthread_mutex_lock(&heap.heap_mutex);
+    initialize_allocated_block(block, payload_size);
     heap.total_allocated += payload_size;
     heap.allocation_count++;
     pthread_mutex_unlock(&heap.heap_mutex);
@@ -332,11 +323,17 @@ void* mem_alloc(size_t size){
     size_t actual_size = (size < MIN_ALLOC_SIZE) ? MIN_ALLOC_SIZE : size;
     size_t aligned_size = align_size(actual_size);
 
+    pthread_mutex_lock(&heap.heap_mutex);
+
     // search in free list
     block_t* block = find_free_block(aligned_size);
     if(block != NULL){
-        return allocate_from_free_block(block, aligned_size);
+        void* ptr = allocate_from_free_block(block, aligned_size);
+        pthread_mutex_unlock(&heap.heap_mutex);
+        return ptr;
     }
+
+    pthread_mutex_unlock(&heap.heap_mutex);
 
     // if not found in free list, allocate new memory
     return allocate_new_memory(aligned_size);
