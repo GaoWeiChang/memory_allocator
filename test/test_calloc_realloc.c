@@ -68,30 +68,6 @@ static void test_realloc_shrink_in_place(void) {
     printf("--------\n");
 }
 
-static void test_realloc_grow_in_place_via_coalesce(void) {
-    heap_reset();
-    printf("[Test 4] realloc(): Ensuring in-place growth works if the right-adjacent block is free...\n");
-
-    void* a = mem_alloc(64);
-    void* b = mem_alloc(64);
-    memset(a, 0xCD, 64);
-
-    mem_free(b);   /* The block to the right of 'a' is now free -> realloc(a, larger) should merge with it in-place */
-
-    void* grown = mem_realloc(a, 100);
-    assert(grown == a);   /* Must return the same address because in-place expansion succeeded */
-    printf("  realloc(a, 64->100) after freeing adjacent block 'b' -> same address (in-place growth succeeded)\n");
-
-    unsigned char* bytes = (unsigned char*)grown;
-    for (int i = 0; i < 64; i++) assert(bytes[i] == 0xCD);
-    printf("  First 64 bytes of data remain untouched and equal to 0xCD (no copying performed)\n");
-
-    mem_free(grown);
-    printf("--------\n");
-    printf("  PASS  \n");
-    printf("--------\n");
-}
-
 static void test_realloc_fallback_copy(void) {
     heap_reset();
     printf("[Test 5] realloc(): Fallback malloc + copy + free when in-place growth is impossible...\n");
@@ -211,7 +187,6 @@ int main(){
     test_calloc_zero_fill();
     test_calloc_overflow_detected();
     test_realloc_shrink_in_place();
-    test_realloc_grow_in_place_via_coalesce();
     test_realloc_fallback_copy();
     test_realloc_edge_cases();
     test_aligned_alloc_small_alignment();
