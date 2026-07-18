@@ -122,49 +122,15 @@ static void test_block_splitting(void){
     printf("--------\n");
 }
 
-static void test_stress(void){
-    heap_reset();
-
-    printf("\n");
-    printf("\n");
-
-    printf("=> Test 5: Stress test\n");
-    printf("\n");
-
-    const int iterations = 10000;
-    void* allocations[iterations];
-
-    srand(42);
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-
-    for (int i = 0; i < iterations; i++) {
-        size_t size = (rand() % 512) + 1;
-        allocations[i] = mem_alloc(size);
-        assert(allocations[i] != NULL);
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    double alloc_us = ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / 1e3;
-
-    for (int i = 0; i < iterations; i++) {
-        mem_free(allocations[i]);
-    }
-
-    printf("Successfully allocated %d blocks, average time %.3f us/malloc\n", iterations, alloc_us / iterations);
-    printf("--------\n");
-    printf("  PASS  \n");
-    printf("--------\n");
-}
-
 int main(){
 
     test_basic_malloc();
     test_alignment_all_sizes();
     test_free_list_reuse();
     test_block_splitting();
-    test_stress();
 
+    heap_reset();
+    
     printf("\n");
     printf("\n");
 

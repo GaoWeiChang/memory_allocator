@@ -194,6 +194,8 @@ int main(){
     test_aligned_alloc_invalid_args();
     test_malloc_usable_size();
 
+    heap_reset();
+
     printf("\n");
     printf("\n");
 }
