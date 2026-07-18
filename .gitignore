@@ -1,6 +1,3 @@
-test/test_coalescing
 test/test_malloc
-test/test_alloc_strategies
-test/test_error_handling
 test/test_calloc_realloc
-test/test_multi_thread_stress
+test/test_multi_thread

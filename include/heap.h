@@ -19,7 +19,7 @@ typedef struct {
     pthread_mutex_t heap_mutex;
 
     strategy_t strategy;
-    block_t* next_fit_cursor;       // next-fit strategy
+    block_t* next_fit_cursor;       // cursor for next-fit strategy 
 
     size_t total_allocated;
     size_t allocation_count;
@@ -30,6 +30,7 @@ typedef struct {
     size_t block_checked;
     size_t free_blocks_found;
     size_t allocated_blocks_found;
+    size_t thread_cache_blocks_found;
     size_t corrupted_blocks;
     size_t free_list_mismatches;
     bool heap_is_consistent;
@@ -62,6 +63,10 @@ void* mem_calloc(size_t nmemb, size_t size);
 void* mem_realloc(void* ptr, size_t new_size);
 void* mem_aligned_alloc(size_t alignment, size_t size);
 size_t mem_alloc_usable_size(void* ptr);
+
+/* thread-local cache */
+size_t heap_tls_cache_count(void);
+void heap_tls_cache_flush(void);
 
 /* for testing & debugging */
 void heap_reset(void);

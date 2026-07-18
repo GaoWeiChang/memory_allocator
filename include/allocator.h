@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 
 /*
     Block layout
@@ -19,20 +20,8 @@
 #define ALIGNMENT 16
 #define MIN_ALLOC_SIZE (sizeof(void*) * 2)  // minimum space for prev_free/next_free
 
-/* block header */
-typedef struct block{
-    size_t size;
-    uint32_t is_free;
-    uint32_t magic;
 
-    struct block* prev_free;
-    struct block* next_free;
-} block_t;
-
-#define HEADER_SIZE sizeof(block_t)
-#define FOOTER_SIZE 16
-
-/* block status */
+/* block correctness status */
 typedef enum{
     BLOCK_VALID,
     BLOCK_CORRUPT_MAGIC,
@@ -42,6 +31,27 @@ typedef enum{
     BLOCK_FOOTER_MISMATCH,
     BLOCK_CANARY_CORRUPTED
 } block_status_t;
+
+/* block allocation states */
+typedef enum{
+    BLOCK_ALLOCATED,
+    BLOCK_FREE_GLOBAL,
+    BLOCK_FREE_THREAD_LOCAL
+} block_state_t;
+
+/* block header */
+typedef struct block{
+    size_t size;
+    _Atomic block_state_t is_free;
+    uint32_t magic;
+
+    struct block* prev_free;
+    struct block* next_free;
+} block_t;
+
+#define HEADER_SIZE sizeof(block_t)
+#define FOOTER_SIZE 16
+
 
 /* memory alignment */
 static inline size_t align_size(size_t size){
@@ -92,7 +102,7 @@ static inline void initialize_allocated_block(block_t* block, size_t size){
 
 static inline void initialize_free_block(block_t* block, size_t size){
     block->size = size;
-    block->is_free = 1;
+    block->is_free = BLOCK_FREE_GLOBAL;
     block->magic = MAGIC_NUMBER;
     block->next_free = NULL;
     block->prev_free = NULL;
@@ -151,7 +161,7 @@ static inline block_status_t verify_block_integrity(block_t* block){
         return BLOCK_CORRUPT_MAGIC;
     }
 
-    if((block->is_free != 0) && (block->is_free != 1)){
+    if(block->is_free > BLOCK_FREE_THREAD_LOCAL){
         return BLOCK_INVALID_FREE_STATE;
     }
 

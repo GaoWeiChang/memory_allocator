@@ -5,6 +5,39 @@
 // marker that tell this pointer came from aligned_alloc() not malloc()
 #define ALIGN_MARKER ((size_t)0xA11CEDA11C0FFEEULL)
 
+
+/* thread-local cache */
+#define NUM_SIZE_CLASSES 8
+#define MAX_CACHE_PER_CLASS 32
+
+static const size_t SIZE_CLASSES[NUM_SIZE_CLASSES] = {16, 32, 48, 64, 96, 128, 192, 256};
+
+typedef struct {
+    block_t* head;
+    int count;
+} tls_bucket_t;
+
+static _Thread_local tls_bucket_t tls_cache[NUM_SIZE_CLASSES];
+
+// use when free()/push in cache only
+static int size_class_index_exact(size_t size){
+    for(int i=0; i<NUM_SIZE_CLASSES; i++){
+        if(size == SIZE_CLASSES[i])
+            return i;
+    }
+    return -1;
+}
+
+// use when malloc()/pop from cache only
+static int size_class_index_ceil(size_t size){
+    for(int i=0; i<NUM_SIZE_CLASSES; i++){
+        if(size <= SIZE_CLASSES[i])
+            return i;
+    }
+    return -1;
+}
+
+
 heap_state_t heap = {
     .free_list_head = NULL,
     .heap_mutex = PTHREAD_MUTEX_INITIALIZER,
@@ -271,7 +304,7 @@ static bool coalesce_forward(block_t* block, memory_region_t* region){
     if(!is_valid_neighbor(block, region))
         return false;
     
-    if(!next->is_free)
+    if(next->is_free != BLOCK_FREE_GLOBAL)
         return false;
     
     remove_from_free_list(next);
@@ -291,6 +324,9 @@ static block_t* coalesce_backward(block_t* block, memory_region_t* region){
 
     block_t* prev = get_prev_block(block);
     if(!is_valid_neighbor(prev, region) || !prev->is_free)
+        return block;
+
+    if(prev->is_free != BLOCK_FREE_GLOBAL)
         return block;
 
     remove_from_free_list(prev);
@@ -315,6 +351,37 @@ static void* resolve_aligned_redirect(void* ptr){
     return raw;
 }
 
+/* 
+    pthread key to automatically return cached blocks to the global free list upon thread termination, 
+    requiring no manual cleanup from the user
+*/
+static pthread_key_t tls_cleanup_key;
+static pthread_once_t tls_key_once = PTHREAD_ONCE_INIT;
+
+static void tls_destructor(void* unused){
+    (void)unused;
+    heap_tls_cache_flush();
+}
+
+static void tls_key_init(void){
+    pthread_key_create(&tls_cleanup_key, tls_destructor);
+}
+
+static void ensure_tls_registered(void){
+    pthread_once(&tls_key_once, tls_key_init);
+    if(pthread_getspecific(tls_cleanup_key) == NULL){
+        pthread_setspecific(tls_cleanup_key, (void*)1);
+    }
+}
+
+size_t heap_tls_cache_count(void){
+    size_t total = 0;
+    for(int i=0; i<NUM_SIZE_CLASSES; i++){
+        total += (size_t)tls_cache[i].count;
+    }
+
+    return total;
+}
 void* mem_alloc(size_t size){
     if(size == 0)
         return NULL;
@@ -323,9 +390,31 @@ void* mem_alloc(size_t size){
     size_t actual_size = (size < MIN_ALLOC_SIZE) ? MIN_ALLOC_SIZE : size;
     size_t aligned_size = align_size(actual_size);
 
+    // search in thread local cache
+    int class_idx = size_class_index_ceil(aligned_size);
+    if(class_idx >= 0){
+        ensure_tls_registered();
+        tls_bucket_t* bucket = &tls_cache[class_idx];
+
+        if(bucket->head){
+            block_t* block = bucket->head;
+            bucket->head = block->next_free;
+            bucket->count--;
+
+            // check use-after-free
+            if(!is_poison_intact(block, block->size)){
+                fprintf(stderr, "Heap warning: Found write memory overlapped after free() (use-after-free) at %p\n", 
+                        get_ptr_from_block(block));
+            }
+
+            block->is_free = BLOCK_ALLOCATED;
+            return get_ptr_from_block(block);
+        }
+    }
+
     pthread_mutex_lock(&heap.heap_mutex);
 
-    // search in free list
+    // search in global free list
     block_t* block = find_free_block(aligned_size);
     if(block != NULL){
         void* ptr = allocate_from_free_block(block, aligned_size);
@@ -339,6 +428,39 @@ void* mem_alloc(size_t size){
     return allocate_new_memory(aligned_size);
 }
 
+static void return_block_to_global_free_list(block_t* block, memory_region_t* known_region){
+    memory_region_t* region = known_region ? known_region : find_memory_region(block);
+    initialize_free_block(block, block->size);
+
+    if(region){
+        coalesce_forward(block, region);
+        block = coalesce_backward(block, region);
+    }
+
+    poison_block_payload(block);
+    add_to_free_list(block);
+}
+
+void heap_tls_cache_flush(void){
+    pthread_mutex_lock(&heap.heap_mutex);
+
+    for(int i=0; i<NUM_SIZE_CLASSES; i++){
+        tls_bucket_t* bucket = &tls_cache[i];
+        block_t* cur = bucket->head;
+
+        while(cur){
+            block_t* next = cur->next_free;
+            return_block_to_global_free_list(cur, NULL);
+            cur = next;
+        }
+
+        bucket->head = NULL;
+        bucket->count = 0;
+    }
+
+    pthread_mutex_unlock(&heap.heap_mutex);
+}
+
 void mem_free(void* ptr){
     if(!ptr)
         return;
@@ -349,17 +471,53 @@ void mem_free(void* ptr){
         return;
     }
 
-    // locate and verift block
+    // locate and verify block
     block_t* block = get_block_from_ptr(ptr);
     block_status_t status = verify_block_integrity(block);
-    if(status != BLOCK_VALID){
-        fprintf(stderr, "Error: Invalid block (status=%d) at %p\n", status, ptr);
+    if(status != BLOCK_VALID) {
+        fprintf(stderr, "[heap] free(): Invalid block (status=%d) at %p", status, ptr);
+        switch (status) {
+            case BLOCK_FOOTER_MISMATCH:
+                fprintf(stderr, " -> Heap buffer overflow detected (footer corrupted/overwritten)\n");
+                break;
+            case BLOCK_CANARY_CORRUPTED:
+                fprintf(stderr, " -> Heap buffer overflow detected (canary corrupted/overwritten)\n");
+                break;
+            case BLOCK_CORRUPT_MAGIC:
+                fprintf(stderr, " -> Magic number corrupted (possible invalid pointer passed to free() or overflow from previous block)\n");
+                break;
+            default:
+                fprintf(stderr, "\n");
+        }
         return;
     }
 
-    if(block->is_free){
+    if(block->is_free != BLOCK_ALLOCATED){
         fprintf(stderr, "Error: block double free at %p\n", ptr);
         return;
+    }
+
+    // push free block in local thread cache
+    int class_idx = size_class_index_exact(block->size);
+    if(class_idx >= 0){
+        ensure_tls_registered();
+        tls_bucket_t* bucket = &tls_cache[class_idx];
+
+        // if cache didnt full push free block in cache, 
+        // when cache full add in global free list
+        if(bucket->count < MAX_CACHE_PER_CLASS){
+            poison_block_payload(block);
+            block->is_free = BLOCK_FREE_THREAD_LOCAL;
+            block->next_free = bucket->head;
+            bucket->head = block;
+            bucket->count++;
+
+            pthread_mutex_lock(&heap.heap_mutex);
+            heap.total_allocated -= block->size;
+            heap.free_count++;
+            pthread_mutex_unlock(&heap.heap_mutex);
+            return;
+        }
     }
 
     // check memory allocate from sbrk or mmap
@@ -380,17 +538,7 @@ void mem_free(void* ptr){
     pthread_mutex_lock(&heap.heap_mutex);
     heap.total_allocated -= block->size;
     heap.free_count++;
-    initialize_free_block(block, block->size);
-
-    // coalesce free block
-    if(region){
-        coalesce_forward(block, region);
-        block = coalesce_backward(block, region);
-    }
-
-    poison_block_payload(block);
-    add_to_free_list(block);
-
+    return_block_to_global_free_list(block, region);
     pthread_mutex_unlock(&heap.heap_mutex);
 }
 
@@ -511,7 +659,7 @@ void* mem_realloc(void* ptr, size_t new_size){
     Standard malloc() guarantees up to 16-byte alignment (max_align_t),
     which is sufficient for all standard C data types.
 
-    Use my_aligned_alloc() only when alignments > 16 bytes 
+    Use mem_aligned_alloc() only when alignments > 16 bytes 
         eg. SIMD / AVX-2
  */
 void* mem_aligned_alloc(size_t alignment, size_t size){
@@ -605,7 +753,7 @@ static void check_region_visitor(const memory_region_t* region, void* ctx_ptr) {
             return;
         }
 
-        if(block->is_free){
+        if(block->is_free != BLOCK_ALLOCATED){
             result->free_list_mismatches++;
         } else {
             result->allocated_blocks_found++;
@@ -625,11 +773,17 @@ static void check_region_visitor(const memory_region_t* region, void* ctx_ptr) {
         }
 
         bool in_free_list = block_in_free_list(block);
-        if(block->is_free) {
+        if(block->is_free == BLOCK_FREE_GLOBAL) {
             result->free_blocks_found++;
             if(!in_free_list)
                 result->free_list_mismatches++;
-        } else {
+        } 
+        else if(block->is_free == BLOCK_FREE_THREAD_LOCAL){
+            result->thread_cache_blocks_found++;
+            if(in_free_list)
+                result->free_list_mismatches++;
+        }
+        else {
             result->allocated_blocks_found++;
             if(in_free_list)
                 result->free_list_mismatches++;
@@ -640,7 +794,7 @@ static void check_region_visitor(const memory_region_t* region, void* ctx_ptr) {
 }
 
 heap_check_result_t heap_check_consistency(void){
-    heap_check_result_t result = {0,0,0,0,0,true};
+    heap_check_result_t result = {0, 0, 0, 0, 0, 0, true};
 
     pthread_mutex_lock(&heap.heap_mutex);
     memory_source_for_each_region(check_region_visitor, &result);
@@ -651,6 +805,16 @@ heap_check_result_t heap_check_consistency(void){
 }
 
 // dump allocator state for debugging
+
+static const char* block_state_label(block_t* block) {
+    if (block->is_free == BLOCK_FREE_GLOBAL) 
+        return "FREE";
+    if (block->is_free == BLOCK_FREE_THREAD_LOCAL) 
+        return "cached";
+
+    return "used";
+}
+
 static void dump_region_visitor(const memory_region_t* region, void* ctx){
     (void)ctx;
     printf("region %p (%zu bytes, %s)\n",
@@ -671,7 +835,7 @@ static void dump_region_visitor(const memory_region_t* region, void* ctx){
             printf("[%p] CORRUPTED\n", (void*)block);
             break;
         }
-        printf("[%p] size=%-8zu %s\n", (void*)block, block->size, block->is_free ? "FREE" : "used");
+        printf("[%p] size=%-8zu %s\n", (void*)block, block->size, block_state_label(block));
         block = get_next_block(block);
     }
 }
@@ -683,6 +847,12 @@ void heap_reset(void){
     heap.allocation_count = 0;
     heap.free_count = 0;
     pthread_mutex_unlock(&heap.heap_mutex);
+
+    // clear thread local cache
+    for(int i=0; i<NUM_SIZE_CLASSES; i++){
+        tls_cache[i].head = NULL;
+        tls_cache[i].count = 0;
+    }
 
     memory_source_cleanup();
 }
