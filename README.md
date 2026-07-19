@@ -13,7 +13,6 @@ A thread-safe memory allocator built from scratch in C to demonstrate systems pr
   - [Performance](#performance)
 - [Getting Started](#getting-started)
 - [Project Structure](#project-structure)
-- [Testing & Verification](#testing--verification)
 - [Limitation](#limitation)
 
 ## Architecture Overview
@@ -29,7 +28,8 @@ A thread-safe memory allocator built from scratch in C to demonstrate systems pr
 <p align="center">
   <img width="832" height="378" alt="memory_block_layout drawio"  src="https://github.com/user-attachments/assets/acd1422f-e3b2-4996-b046-4491ad7e39ff" />
 </p>
-&emsp;Every block is a contiguous run of four regions: a 32-byte **HEADER** holding the block's metadata, the **payload** the caller actually reads and writes, an 8-byte **FOOTER** that duplicates the block's size (used to walk backward to the previous block during coalescing), and an 8-byte **CANARY** that detects writes past the end of the payload. <br /> <br />
+&emsp;Every block is a contiguous run of four regions: a 32-byte HEADER holding the block's metadata, the payload the caller actually reads and writes, an 8-byte FOOTER that duplicates the block's size (used to walk backward to the previous block during coalescing), and an 8-byte CANARY that detects writes past the end of the payload. <br /> <br />
+
 &emsp;The `mem_alloc()` return value points at the start of the payload, not the header — the header sits invisibly *before* the pointer the caller holds. Internally, the 32-byte header breaks down into five fields: `size` (8 bytes), `is_free` (4 bytes, `_Atomic` — see [Multithreading](#multithreading)), `magic` (4 bytes, corruption sentinel), and the `prev_free`/`next_free` pointers (8 bytes each) used only while the block sits in a free list. The whole block is kept 16-byte aligned end-to-end so every payload address satisfies common alignment requirements without extra work.
 
 
