@@ -1,5 +1,5 @@
 # Memory Allocator
-A thread-safe memory allocator built from scratch in C to demonstrate systems programming concepts and memory management techniques — hybrid `sbrk`/`mmap` sourcing, boundary-tag coalescing, pluggable allocation strategies, corruption detection, standard-compliant `calloc`/`realloc`/`aligned_alloc`, and a thread-local caching layer that removes global-lock contention under concurrent load.
+A thread-safe memory allocator built from scratch in C to demonstrate systems programming concepts and memory management techniques — hybrid `sbrk`/`mmap` sourcing, boundary-tag coalescing, pluggable allocation strategies, corruption detection, and a thread-local caching layer that removes global-lock contention under concurrent load.
 
 ## Table of Contents
 
@@ -8,7 +8,6 @@ A thread-safe memory allocator built from scratch in C to demonstrate systems pr
 - [Workflows Diagram](#workflows-diagram)
   - [Allocation](#allocation)
   - [Deallocation](#deallocation)
-  - [Advanced Operations](#advanced-operations)
 - [Multithreading](#multithreading)
   - [Performance](#performance)
 - [Getting Started](#getting-started)
@@ -21,7 +20,6 @@ A thread-safe memory allocator built from scratch in C to demonstrate systems pr
 - **Free-list allocation** — free blocks live in a doubly-linked list searched by one of four pluggable strategies (First-Fit, Best-Fit, Worst-Fit, Next-Fit).
 - **Coalescing** — adjacent free blocks are merged immediately on `free()` to keep external fragmentation low.
 - **Integrity checking** — magic numbers, boundary-tag self-checks, and a redzone canary catch heap corruption and buffer overflows early; a full heap walk (`heap_check_consistency()`) can independently verify every block against the free list.
-- **Standard compliance** — `calloc`, `realloc`, and `aligned_alloc` are implemented on top of the same block machinery, matching the semantics of their libc counterparts.
 - **Thread safety** — a global mutex protects the shared free list; a per-thread cache layer removes that mutex from the hot path for common allocation sizes.
 
 ## Memory Block Layout
@@ -45,11 +43,6 @@ A thread-safe memory allocator built from scratch in C to demonstrate systems pr
   <img width="1626" height="1723" alt="free drawio" src="https://github.com/user-attachments/assets/4af3c1f2-7206-446c-bec4-5f7242c041ae" />
 </p>
 `mem_free()` runs a sequence of guard checks before touching the free list: a `NULL` pointer returns immediately; a corrupted block (bad magic, footer, or canary) is rejected with a diagnostic instead of being freed; a block that's already free is rejected as a double-free. Only after passing all three does it try the thread-local cache — if the block's size matches a class exactly and that cache isn't full, it's pushed there directly, again without the mutex. Everything else falls through to the shared path, where `mmap`-backed blocks are returned to the OS immediately via `munmap`, and `sbrk`-backed blocks are coalesced with their neighbors and added back to the global free list.
-
-### Advanced operations
-- **`calloc`** — computes `nmemb * size` with an explicit overflow check before allocating (a classic C bug when left unchecked), then zero-fills the returned memory unconditionally, since the underlying block may still carry poison bytes from a previous `free()`.
-- **`realloc`** — tries to resize in place first: shrinking always succeeds without moving data, and growing succeeds without a copy whenever the immediately-following block is free and large enough to absorb via coalescing. Only when neither is possible does it fall back to allocate-copy-free — and if that fallback allocation fails, the original block is left completely untouched, matching standard `realloc` semantics.
-- **`aligned_alloc`** — for alignments up to 16 bytes, every block from `mem_alloc()` already satisfies the requirement, so the call is forwarded directly with no extra cost. For larger alignments (32, 64, 4096, ...), the allocator over-allocates, shifts the returned pointer forward to the required boundary, and stashes a hidden back-pointer plus a marker just before it. `mem_free()`/`mem_realloc()` transparently detect that marker and redirect to the real underlying block — callers never need a separate "aligned free" function.
 
 
 ## Multithreading
