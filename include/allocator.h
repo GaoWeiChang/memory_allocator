@@ -8,7 +8,7 @@
 
 /*
     Block layout
-        [ HEADER (32B) ] metadata
+        [ HEADER (48B) ] metadata
         [ payload (size bytes) ] actual user data
         [ FOOTER (8B) ] copy of the block size, used to find the previous block during coalescing
         [ CANARY (8B) ] check buffer overflow / memory corrupt
@@ -49,6 +49,9 @@ typedef struct block
 
     struct block *prev_free;
     struct block *next_free;
+
+    int numa_node;             // NUMA node this block's memory belongs to
+    unsigned char _reserved[12]; // pad header to a 16-byte multiple
 } block_t;
 
 #define HEADER_SIZE sizeof(block_t)

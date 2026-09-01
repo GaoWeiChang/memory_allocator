@@ -39,6 +39,13 @@ typedef struct
     bool heap_is_consistent;
 } heap_check_result_t;
 
+typedef struct
+{
+    unsigned long local_hits;   // cache served a block from the caller's NUMA node
+    unsigned long remote_hits;  // cache served a block from a different NUMA node
+    unsigned long cache_misses; // size class cacheable but bucket was empty
+} heap_numa_stats_t;
+
 extern heap_state_t heap;
 
 /* free list management */
@@ -66,6 +73,10 @@ size_t mem_alloc_usable_size(void *ptr);
 /* thread-local cache */
 size_t heap_tls_cache_count(void);
 void heap_tls_cache_flush(void);
+
+/* NUMA-aware thread-local cache */
+heap_numa_stats_t heap_numa_cache_stats(void);
+void heap_numa_cache_stats_reset(void);
 
 /* for testing & debugging */
 void heap_reset(void);

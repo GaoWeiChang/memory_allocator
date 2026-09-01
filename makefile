@@ -2,7 +2,7 @@ CC := gcc
 CFLAGS := -Wall -Wextra -Iinclude -g
 LDFLAGS := -lpthread
 
-SRC := src/heap.c src/memory_source.c
+SRC := src/heap.c src/memory_source.c src/numa_topology.c
 OBJ := $(SRC:.c=.o)
 
 TEST_SRCS := $(wildcard test/test_*.c)

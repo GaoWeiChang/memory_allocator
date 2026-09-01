@@ -1,4 +1,5 @@
 #include "../include/heap.h"
+#include "../include/numa_topology.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +16,81 @@ typedef struct
 } tls_bucket_t;
 
 static _Thread_local tls_bucket_t tls_cache[NUM_SIZE_CLASSES];
+
+/* NUMA-aware cache accounting (aggregated across threads) */
+static _Atomic unsigned long numa_local_hits = 0;
+static _Atomic unsigned long numa_remote_hits = 0;
+static _Atomic unsigned long numa_cache_misses = 0;
+
+heap_numa_stats_t heap_numa_cache_stats(void)
+{
+    heap_numa_stats_t s;
+    s.local_hits = atomic_load(&numa_local_hits);
+    s.remote_hits = atomic_load(&numa_remote_hits);
+    s.cache_misses = atomic_load(&numa_cache_misses);
+    return s;
+}
+
+void heap_numa_cache_stats_reset(void)
+{
+    atomic_store(&numa_local_hits, 0);
+    atomic_store(&numa_remote_hits, 0);
+    atomic_store(&numa_cache_misses, 0);
+}
+
+/*
+    Pop a block from a thread-local cache bucket, preferring one whose memory
+        lives on the caller's current NUMA node. 
+    Falls back to the head of the list (any node) when no local block is cached. 
+    Returns NULL when the bucket is empty.
+*/
+static block_t *tls_bucket_pop_numa_aware(tls_bucket_t *bucket)
+{
+    if (!bucket->head)
+        return NULL;
+
+    int want = numa_current_node();
+
+    block_t *prev = NULL;
+    block_t *match_prev = NULL;
+    block_t *match = NULL;
+
+    // find block that match current NUMA node 
+    for (block_t *cur = bucket->head; cur; prev = cur, cur = cur->next_free)
+    {
+        if (cur->numa_node == want)
+        {
+            match = cur;
+            match_prev = prev;
+            break;
+        }
+    }
+
+    block_t *block;
+    if (match)
+    {
+        block = match;
+        if (match_prev)
+            match_prev->next_free = match->next_free;
+        else
+            bucket->head = match->next_free;
+        atomic_fetch_add(&numa_local_hits, 1);
+    }
+    else
+    {
+        // fall back
+        block = bucket->head;
+        bucket->head = block->next_free;
+        if (block->numa_node == want || want == NUMA_NODE_UNKNOWN)
+            atomic_fetch_add(&numa_local_hits, 1);
+        else
+            atomic_fetch_add(&numa_remote_hits, 1);
+    }
+
+    bucket->count--;
+    block->next_free = NULL;
+    return block;
+}
 
 // use when free()/push in cache only
 static int size_class_index_exact(size_t size)
@@ -111,6 +187,7 @@ block_t *split_block(block_t *block, size_t needed_size)
     block_t *new_block = (block_t *)split_addr;
     size_t remain_size = block->size - needed_size - HEADER_SIZE - FOOTER_SIZE;
     initialize_free_block(new_block, remain_size);
+    new_block->numa_node = block->numa_node;
 
     block->size = needed_size;
     write_footer(block);
@@ -305,6 +382,7 @@ static void *allocate_new_memory(size_t size)
 
     pthread_mutex_lock(&heap.heap_mutex);
     initialize_allocated_block(block, payload_size);
+    block->numa_node = numa_node_for_new_block();
     heap.total_allocated += payload_size;
     heap.allocation_count++;
     pthread_mutex_unlock(&heap.heap_mutex);
@@ -430,12 +508,9 @@ void *mem_alloc(size_t size)
         ensure_tls_registered();
         tls_bucket_t *bucket = &tls_cache[class_idx];
 
-        if (bucket->head)
+        block_t *block = tls_bucket_pop_numa_aware(bucket);
+        if (block)
         {
-            block_t *block = bucket->head;
-            bucket->head = block->next_free;
-            bucket->count--;
-
             // check use-after-free
             if (!is_poison_intact(block, block->size))
             {
@@ -446,6 +521,8 @@ void *mem_alloc(size_t size)
             block->is_free = BLOCK_ALLOCATED;
             return get_ptr_from_block(block);
         }
+
+        atomic_fetch_add(&numa_cache_misses, 1);
     }
 
     pthread_mutex_lock(&heap.heap_mutex);
@@ -752,6 +829,8 @@ void heap_reset(void)
         tls_cache[i].head = NULL;
         tls_cache[i].count = 0;
     }
+
+    heap_numa_cache_stats_reset();
 
     memory_source_cleanup();
 }
