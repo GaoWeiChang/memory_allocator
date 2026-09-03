@@ -110,5 +110,8 @@ int main(void)
 {
     test_multi_thread_per_node_cache();
     printf("\nMulti-threaded NUMA test passed.\n");
+
+    heap_reset();
+
     return 0;
 }

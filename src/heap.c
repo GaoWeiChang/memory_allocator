@@ -117,7 +117,7 @@ static int size_class_index_ceil(size_t size)
 heap_state_t heap = {
     .free_list_head = NULL,
     .heap_mutex = PTHREAD_MUTEX_INITIALIZER,
-    .strategy = STRATEGY_FIRST_FIT,
+    .strategy = STRATEGY_BEST_FIT,
     .next_fit_cursor = NULL,
     .total_allocated = 0,
     .allocation_count = 0,
@@ -230,7 +230,6 @@ block_t *find_free_block_best_fit(size_t size)
             return NULL;
         }
 
-        // NOTE !!!! why use || instead of &&?
         if (current->size >= size)
         {
             if (!best || current->size < best->size)
@@ -272,36 +271,6 @@ block_t *find_free_block_worst_fit(size_t size)
     return worst;
 }
 
-block_t *find_free_block_next_fit(size_t size)
-{
-    if (!heap.free_list_head)
-        return NULL;
-
-    block_t *start = heap.next_fit_cursor ? heap.next_fit_cursor : heap.free_list_head;
-    block_t *current = start;
-
-    while (current)
-    {
-        if (verify_block_integrity(current) != BLOCK_VALID)
-        {
-            fprintf(stderr, "Error: found free-list corruption at %p\n", (void *)current);
-            return NULL;
-        }
-
-        if (current->size >= size)
-        {
-            heap.next_fit_cursor = current->next_free ? current->next_free : heap.free_list_head;
-            return current;
-        }
-
-        current = current->next_free;
-        if (current == start)
-            break;
-    }
-
-    return NULL;
-}
-
 block_t *find_free_block(size_t size)
 {
     block_t *result;
@@ -312,9 +281,6 @@ block_t *find_free_block(size_t size)
         break;
     case STRATEGY_WORST_FIT:
         result = find_free_block_worst_fit(size);
-        break;
-    case STRATEGY_NEXT_FIT:
-        result = find_free_block_next_fit(size);
         break;
     default:
         result = find_free_block_first_fit(size);

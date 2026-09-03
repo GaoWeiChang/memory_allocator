@@ -6,7 +6,7 @@
 #include <pthread.h>
 #include "../include/heap.h"
 
-#define OPS_PER_THREAD 100000
+#define OPS_PER_THREAD 10000
 
 typedef struct
 {

@@ -109,5 +109,8 @@ int main(void)
     test_cache_prefers_local_node();
     test_single_node_still_works();
     printf("\nAll NUMA tests passed.\n");
+
+    heap_reset();
+
     return 0;
 }
