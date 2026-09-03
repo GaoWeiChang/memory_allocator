@@ -12,7 +12,6 @@ typedef enum
     STRATEGY_FIRST_FIT,
     STRATEGY_BEST_FIT,
     STRATEGY_WORST_FIT,
-    STRATEGY_NEXT_FIT
 } strategy_t;
 
 typedef struct
@@ -60,7 +59,6 @@ void heap_set_strategy(strategy_t strategy);
 block_t *find_free_block_first_fit(size_t size);
 block_t *find_free_block_best_fit(size_t size);
 block_t *find_free_block_worst_fit(size_t size);
-block_t *find_free_block_next_fit(size_t size);
 
 /* check consistency */
 heap_check_result_t heap_check_consistency(void);

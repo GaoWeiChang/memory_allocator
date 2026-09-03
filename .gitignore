@@ -3,3 +3,7 @@ test/test_calloc_realloc
 test/test_multi_thread
 test/test_numa
 test/test_numa_multi_thread
+test/test_benchmark
+src/*.o
+performance/benchmark
+performance/fragmentation
