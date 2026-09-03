@@ -2,13 +2,16 @@ CC := gcc
 CFLAGS := -Wall -Wextra -Iinclude -g
 LDFLAGS := -lpthread
 
-SRC := src/heap.c src/memory_source.c
+SRC := src/heap.c src/memory_source.c src/numa_topology.c
 OBJ := $(SRC:.c=.o)
 
 TEST_SRCS := $(wildcard test/test_*.c)
 TEST_BINS := $(TEST_SRCS:.c=)
 
-.PHONY: all test valgrind debug clean
+BENCH_BIN := performance/benchmark
+FRAG_BIN := performance/fragmentation
+
+.PHONY: all test valgrind debug benchmark fragmentation clean
 
 all: $(TEST_BINS)
 
@@ -39,5 +42,17 @@ debug: $(TEST_BINS)
 	fi
 	gdb -q --args $(TEST) $(ARGS)
 
+benchmark: $(BENCH_BIN)
+	./$(BENCH_BIN)
+
+$(BENCH_BIN): performance/benchmark.c $(OBJ)
+	$(CC) $(CFLAGS) -O2 -o $@ $< $(OBJ) $(LDFLAGS)
+
+fragmentation: $(FRAG_BIN)
+	./$(FRAG_BIN)
+
+$(FRAG_BIN): performance/fragmentation.c $(OBJ)
+	$(CC) $(CFLAGS) -O2 -o $@ $< $(OBJ) $(LDFLAGS)
+
 clean:
-	rm -f $(OBJ) $(TEST_BINS)
+	rm -f $(OBJ) $(TEST_BINS) $(BENCH_BIN) $(FRAG_BIN)
